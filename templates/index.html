@@ -1,5 +1,6 @@
 {% if request.path == '/login' %}
 <!DOCTYPE html><html lang="vi"><head><title>Đăng nhập Nội bộ</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head>
 <body class="container py-5 text-center bg-light">
     <div class="row justify-content-center mt-5"><div class="col-md-4">
@@ -28,6 +29,7 @@
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hệ Thống Văn Bằng Blockchain</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://unpkg.com/html5-qrcode"></script> 
@@ -47,11 +49,24 @@
         .revoked-stamp { position: absolute; top: 30%; left: 10%; transform: rotate(-25deg); color: rgba(220, 53, 69, 0.8); font-size: 5rem; font-weight: bold; border: 8px solid rgba(220, 53, 69, 0.8); padding: 10px 20px; text-transform: uppercase; z-index: 10; pointer-events: none; }
         .sbt-badge { background: linear-gradient(45deg, #6f42c1, #0d6efd); color: white; padding: 5px 15px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; display: inline-block; margin-bottom: 15px;}
         #qr-reader { border: none !important; border-radius: 10px; overflow: hidden; }
+        
+        /* Mobile Responsive for Diploma */
+        @media (max-width: 768px) {
+            .diploma-card { padding: 5px; border-width: 4px; }
+            .diploma-inner { padding: 15px; border-width: 1px; }
+            .diploma-badge-container { position: relative !important; text-align: center !important; margin-bottom: 15px; }
+            .sbt-badge-container { position: relative !important; text-align: center !important; padding: 0 !important; margin-bottom: 10px; }
+            .revoked-stamp { font-size: 2.5rem; top: 40%; left: 0; width: 100%; text-align: center; }
+            h2.fw-bold { font-size: 1.5rem; }
+            h3.fw-bold { font-size: 1.2rem; }
+            h4.fw-bold { font-size: 1.1rem; }
+            .fs-5 { font-size: 1rem !important; }
+        }
     </style>
 </head>
 <body class="container py-4 bg-light">
-    <div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom border-secondary">
-        <h2 class="text-primary m-0 fw-bold">🎓 HỆ THỐNG VĂN BẰNG ĐẠI HỌC</h2>
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-center mb-4 pb-2 border-bottom border-secondary text-center text-md-start">
+        <h2 class="text-primary m-0 fw-bold mb-3 mb-md-0 fs-3 fs-md-2">🎓 HỆ THỐNG VĂN BẰNG ĐẠI HỌC</h2>
         <div>
             {% if session.get('role') == 'university' %}
                 <span class="badge bg-success me-2 fs-6">Trực: {{ session.get('university_name') }}</span>
@@ -151,7 +166,7 @@
                     <div id="diploma-content" class="diploma-card shadow-lg text-center serif-text mb-3 animate-fade-in">
                         {% if verify_result.status == 'REVOKED' %} <div class="revoked-stamp">VÔ HIỆU HÓA</div> {% endif %}
                         <div class="diploma-inner bg-white {% if verify_result.status == 'REVOKED' %} opacity-75 {% endif %}">
-                            <div class="position-absolute top-0 end-0 p-2 text-end">
+                            <div class="position-absolute top-0 end-0 p-2 text-end diploma-badge-container">
                                 <span class="badge {% if verify_result.status == 'REVOKED' %}bg-danger{% else %}bg-success{% endif %} fs-6 shadow mb-1">
                                     {% if verify_result.status == 'REVOKED' %}❌ ĐÃ BỊ THU HỒI{% else %}✅ HỢP LỆ (Block #{{ verify_result.data.block_index }}){% endif %}
                                 </span><br>
@@ -161,7 +176,7 @@
                                 <small class="text-muted">Số hiệu: <span class="cert-id">{{ verify_result.data.cert_id }}</span></small>
                             </div>
 
-                            <div class="position-absolute top-0 start-0 p-3"><div class="sbt-badge">💎 Web3 Soulbound Token</div></div>
+                            <div class="position-absolute top-0 start-0 p-3 sbt-badge-container"><div class="sbt-badge">💎 Web3 Soulbound Token</div></div>
 
                             <h5 class="text-uppercase mb-1 mt-4" style="color: #bba14f; font-weight: bold;">Cộng hòa xã hội chủ nghĩa Việt Nam</h5>
                             <h6 class="mb-4">Độc lập - Tự do - Hạnh phúc</h6>
@@ -176,11 +191,11 @@
 
                             <h4 class="fw-bold" style="color: #bba14f;">{{ verify_result.data.university }}</h4>
 
-                            <div class="row mt-4 align-items-center">
-                                <div class="col-4">
+                            <div class="row mt-4 align-items-center flex-column-reverse flex-md-row">
+                                <div class="col-12 col-md-4 mt-3 mt-md-0">
                                     <img src="https://api.qrserver.com/v1/create-qr-code/?size=110x110&data={{ request.host_url }}verify?cert_id={{ verify_result.data.cert_id }}" alt="QR" class="border p-1 shadow-sm">
                                 </div>
-                                <div class="col-8 text-end pe-4">
+                                <div class="col-12 col-md-8 text-center text-md-end pe-md-4">
                                     <p class="mb-4 fs-5"><b>HIỆU TRƯỞNG</b><br><span class="fs-6 text-success fst-italic">(Đã ký số Blockchain)</span></p>
                                 </div>
                             </div>
