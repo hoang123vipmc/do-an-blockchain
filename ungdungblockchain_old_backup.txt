@@ -1,0 +1,476 @@
+import hashlib
+import json
+import sqlite3
+import csv
+import io
+import os
+from time import time
+from flask import Flask, request, render_template_string, session, redirect, url_for, flash
+from werkzeug.security import generate_password_hash, check_password_hash
+
+
+# --- 1. KHỞI TẠO CƠ SỞ DỮ LIỆU ---
+def init_db():
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, role TEXT, university_name TEXT)''')
+    c.execute("SELECT * FROM users")
+    if not c.fetchone():
+        hashed_pw = generate_password_hash("123456")
+        c.execute("INSERT INTO users (username, password, role, university_name) VALUES (?, ?, ?, ?)",
+                  ("bachkhoa", hashed_pw, "university", "Đại học Bách Khoa Hà Nội"))
+        c.execute("INSERT INTO users (username, password, role, university_name) VALUES (?, ?, ?, ?)",
+                  ("kinhte", hashed_pw, "university", "Đại học Kinh tế Quốc dân"))
+        c.execute("INSERT INTO users (username, password, role, university_name) VALUES (?, ?, ?, ?)",
+                  ("hubt", hashed_pw, "university", "Đại học Kinh doanh và Công nghệ Hà Nội"))
+    conn.commit()
+    conn.close()
+
+
+# --- 2. LÕI BLOCKCHAIN ---
+class Block:
+    def __init__(self, index, timestamp, certificates, previous_hash, nonce=0, hash_val=None):
+        self.index = index;
+        self.timestamp = timestamp;
+        self.certificates = certificates
+        self.previous_hash = previous_hash;
+        self.nonce = nonce
+        self.hash = hash_val if hash_val else self.calculate_hash()
+
+    def calculate_hash(self):
+        block_string = json.dumps({
+            "index": self.index, "timestamp": self.timestamp,
+            "certificates": self.certificates, "previous_hash": self.previous_hash, "nonce": self.nonce
+        }, sort_keys=True).encode()
+        return hashlib.sha256(block_string).hexdigest()
+
+
+class EduBlockchain:
+    def __init__(self):
+        self.chain = [];
+        self.pending_certificates = [];
+        self.db_file = 'blockchain_data.json'
+        if not self.load_chain(): self.create_genesis_block()
+
+    def create_genesis_block(self):
+        self.chain.append(Block(0, time(), [], "0"))
+        self.save_chain()
+
+    def save_chain(self):
+        chain_data = [{'index': b.index, 'timestamp': b.timestamp, 'certificates': b.certificates,
+                       'previous_hash': b.previous_hash, 'nonce': b.nonce, 'hash': b.hash} for b in self.chain]
+        with open(self.db_file, 'w', encoding='utf-8') as f:
+            json.dump(chain_data, f, ensure_ascii=False, indent=4)
+
+    def load_chain(self):
+        if os.path.exists(self.db_file):
+            with open(self.db_file, 'r', encoding='utf-8') as f:
+                try:
+                    chain_data = json.load(f)
+                    for b in chain_data:
+                        self.chain.append(
+                            Block(b['index'], b['timestamp'], b['certificates'], b['previous_hash'], b['nonce'],
+                                  b['hash']))
+                    return True
+                except:
+                    pass
+        return False
+
+    # Đã thêm tham số dob (Date of birth)
+    def issue_certificate(self, university, student_id, student_name, dob, degree_info, graduation_year):
+        unique_string = f"{university}-{student_id}-{degree_info}-{graduation_year}-{time()}".encode()
+        cert_id = hashlib.md5(unique_string).hexdigest()[:8].upper()
+        self.pending_certificates.append({
+            'action': 'ISSUE', 'cert_id': cert_id, 'university': university,
+            'student_id': student_id, 'student_name': student_name,
+            'dob': dob, 'degree_info': degree_info, 'graduation_year': graduation_year
+        })
+        return True, cert_id
+
+    def revoke_certificate(self, university, cert_id, reason):
+        self.pending_certificates.append({
+            'action': 'REVOKE', 'cert_id': cert_id, 'university': university, 'reason': reason, 'timestamp': time()
+        })
+        return True
+
+    def mine_pending_certificates(self, difficulty=3):
+        if not self.pending_certificates: return False
+        new_block = Block(len(self.chain), time(), self.pending_certificates, self.chain[-1].hash)
+        target = "0" * difficulty
+        while new_block.hash[:difficulty] != target:
+            new_block.nonce += 1;
+            new_block.hash = new_block.calculate_hash()
+        self.chain.append(new_block);
+        self.pending_certificates = []
+        self.save_chain()
+        return new_block
+
+    def verify_certificate(self, search_cert_id):
+        if not search_cert_id: return None
+        search_cert_id = search_cert_id.strip().upper()
+        cert_data = None;
+        is_revoked = False;
+        revoke_reason = ""
+
+        for block in self.chain:
+            for cert in block.certificates:
+                if cert.get('cert_id') == search_cert_id:
+                    if cert.get('action', 'ISSUE') == 'ISSUE':
+                        cert_data = cert;
+                        cert_data['block_index'] = block.index;
+                        cert_data['hash'] = block.hash
+                    elif cert.get('action') == 'REVOKE':
+                        is_revoked = True;
+                        revoke_reason = cert.get('reason', 'Phát hiện sai phạm')
+
+        if not cert_data: return {"status": "INVALID"}
+        if is_revoked: return {"status": "REVOKED", "data": cert_data, "reason": revoke_reason}
+        return {"status": "VALID", "data": cert_data}
+
+
+# --- 3. WEB SERVER & GIAO DIỆN ---
+app = Flask(__name__)
+app.secret_key = 'chuyen_tien_giai_thuat_2026'
+edu_chain = EduBlockchain()
+init_db()
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Hệ Thống Văn Bằng Blockchain</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://unpkg.com/html5-qrcode"></script> 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <style>
+        .diploma-card { border: 8px solid #bba14f; padding: 10px; background-color: #fdfbf7; position: relative; overflow: hidden; }
+        .diploma-inner { border: 2px solid #bba14f; padding: 30px; position: relative; }
+        .serif-text { font-family: 'Times New Roman', Times, serif; }
+        .cert-id { color: #dc3545; font-family: monospace; font-size: 1.2rem; font-weight: bold; }
+        .revoked-stamp { position: absolute; top: 30%; left: 10%; transform: rotate(-25deg); color: rgba(220, 53, 69, 0.8); font-size: 5rem; font-weight: bold; border: 8px solid rgba(220, 53, 69, 0.8); padding: 10px 20px; text-transform: uppercase; z-index: 10; pointer-events: none; }
+        .sbt-badge { background: linear-gradient(45deg, #6f42c1, #0d6efd); color: white; padding: 5px 15px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; display: inline-block; margin-bottom: 15px;}
+        #qr-reader { border: none !important; border-radius: 10px; overflow: hidden; }
+    </style>
+</head>
+<body class="container py-4 bg-light">
+    <div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom border-secondary">
+        <h2 class="text-primary m-0 fw-bold">🎓 HỆ THỐNG VĂN BẰNG ĐẠI HỌC</h2>
+        <div>
+            {% if session.get('role') == 'university' %}
+                <span class="badge bg-success me-2 fs-6">Trực: {{ session.get('university_name') }}</span>
+                <a href="/logout" class="btn btn-sm btn-danger shadow-sm">Đăng xuất</a>
+            {% else %}
+                <span class="badge bg-secondary me-2 fs-6">Chế độ: Khách tra cứu</span>
+                <a href="/login" class="btn btn-sm btn-outline-primary shadow-sm">Đăng nhập Quản trị</a>
+            {% endif %}
+        </div>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} shadow-sm fw-bold">
+            {{ '✅' if category == 'success' else '⚠️' }} {{ message }}
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <div class="row">
+        <div class="col-md-5">
+            {% if session.get('role') == 'university' %}
+            <div class="card shadow mb-4 border-success border-2">
+                <div class="card-header bg-success text-white"><h5>🏫 Bảng Điều Khiển (Admin)</h5></div>
+                <div class="card-body">
+                    <ul class="nav nav-tabs mb-3" id="myTab">
+                      <li class="nav-item"><a class="nav-link active text-success fw-bold" data-bs-toggle="tab" href="#capbang">Cấp Bằng</a></li>
+                      <li class="nav-item"><a class="nav-link text-danger fw-bold" data-bs-toggle="tab" href="#thuhoi">Thu Hồi ⛔</a></li>
+                    </ul>
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="capbang">
+                            <form action="/issue_bulk" method="POST" enctype="multipart/form-data" class="mb-4 bg-light p-2 border rounded">
+                                <label class="fw-bold text-success small mb-1">Nhập hàng loạt (CSV 5 cột)</label>
+                                <div class="input-group">
+                                    <input type="file" name="file" class="form-control form-control-sm" accept=".csv" required>
+                                    <button type="submit" class="btn btn-success btn-sm">Ghi Block</button>
+                                </div>
+                            </form>
+                            <form action="/issue" method="POST">
+                                <label class="fw-bold text-success small mb-1">Nhập lẻ sinh viên</label>
+                                <input type="text" class="form-control mb-2 bg-light text-muted" value="{{ session.get('university_name') }}" disabled>
+                                <div class="row">
+                                    <div class="col-7"><input type="text" name="student_id" class="form-control mb-2" placeholder="Mã SV (VD: SV001)" required></div>
+                                    <div class="col-5"><input type="date" name="dob" class="form-control mb-2" required></div>
+                                </div>
+                                <input type="text" name="student_name" class="form-control mb-2" placeholder="Họ và Tên" required>
+                                <div class="row">
+                                    <div class="col-8"><input type="text" name="degree_info" class="form-control mb-3" placeholder="Thông tin bằng" required></div>
+                                    <div class="col-4"><input type="number" name="graduation_year" class="form-control mb-3" placeholder="Năm TN" value="2026" required></div>
+                                </div>
+                                <button type="submit" class="btn btn-outline-success w-100 fw-bold">Ký duyệt & Cấp bằng</button>
+                            </form>
+                        </div>
+                        <div class="tab-pane fade" id="thuhoi">
+                            <form action="/revoke" method="POST">
+                                <input type="text" name="cert_id" class="form-control mb-2 text-uppercase text-danger fw-bold" placeholder="Số hiệu bằng cần thu hồi" required>
+                                <input type="text" name="reason" class="form-control mb-3" placeholder="Lý do thu hồi" required>
+                                <button type="submit" class="btn btn-danger w-100 fw-bold">Thực thi Thu Hồi</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <div class="alert alert-info shadow-sm border-info border-2">
+                🔒 Tính năng <b>Cấp phát/Thu hồi</b> yêu cầu quyền Quản trị.
+            </div>
+            {% endif %}
+
+            <div class="card shadow mb-4 border-primary border-2">
+                <div class="card-header bg-primary text-white text-center"><h5>🏢 TRA CỨU VĂN BẰNG, CHỨNG CHỈ</h5></div>
+                <div class="card-body">
+                    <button type="button" class="btn btn-outline-primary w-100 mb-3 fw-bold" onclick="startScanner()" id="btnScan">📷 Quét mã QR bằng Camera</button>
+                    <div id="qr-reader" class="mb-3" style="display: none;"></div>
+                    <div class="text-center text-muted mb-3"><span>Hoặc nhập thủ công</span></div>
+                    <form action="/verify" method="GET" id="verifyForm">
+                        <div class="mb-4">
+                            <label class="form-label fw-bold">Số hiệu văn bằng *</label>
+                            <input type="text" name="cert_id" id="cert_id_input" class="form-control form-control-lg text-uppercase" placeholder="VD: A7B2C9F1" required>
+                        </div>
+                        <button type="submit" id="verifyBtn" class="btn btn-primary w-100 btn-lg fw-bold">Tra cứu Blockchain</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-7">
+            {% if verify_result %}
+                <h4 class="mb-3 text-success fw-bold">🔎 Kết quả tra cứu</h4>
+                {% if verify_result.status == 'VALID' or verify_result.status == 'REVOKED' %}
+
+                    <div id="diploma-content" class="diploma-card shadow-lg text-center serif-text mb-3">
+                        {% if verify_result.status == 'REVOKED' %} <div class="revoked-stamp">VÔ HIỆU HÓA</div> {% endif %}
+                        <div class="diploma-inner bg-white {% if verify_result.status == 'REVOKED' %} opacity-75 {% endif %}">
+                            <div class="position-absolute top-0 end-0 p-2 text-end">
+                                <span class="badge {% if verify_result.status == 'REVOKED' %}bg-danger{% else %}bg-success{% endif %} fs-6 shadow mb-1">
+                                    {% if verify_result.status == 'REVOKED' %}❌ ĐÃ BỊ THU HỒI{% else %}✅ HỢP LỆ (Block #{{ verify_result.data.block_index }}){% endif %}
+                                </span><br>
+                                <small class="text-muted">Số hiệu: <span class="cert-id">{{ verify_result.data.cert_id }}</span></small>
+                            </div>
+
+                            <div class="position-absolute top-0 start-0 p-3"><div class="sbt-badge">💎 Web3 Soulbound Token</div></div>
+
+                            <h5 class="text-uppercase mb-1 mt-4" style="color: #bba14f; font-weight: bold;">Cộng hòa xã hội chủ nghĩa Việt Nam</h5>
+                            <h6 class="mb-4">Độc lập - Tự do - Hạnh phúc</h6>
+                            <h2 class="mt-4 mb-4 fw-bold {% if verify_result.status == 'REVOKED' %}text-secondary{% else %}text-danger{% endif %}">BẰNG TỐT NGHIỆP ĐẠI HỌC</h2>
+
+                            <h4 class="mb-2">Sinh viên: <b class="text-primary">{{ verify_result.data.student_name }}</b></h4>
+                            <p class="fs-6 text-muted mb-3">Ngày sinh: {{ verify_result.data.get('dob', 'N/A') }} &nbsp;|&nbsp; Mã SV: {{ verify_result.data.student_id }}</p>
+
+                            <p class="fs-5 mb-1">Đã hoàn thành chương trình đào tạo và được cấp bằng:</p>
+                            <h3 class="{% if verify_result.status == 'REVOKED' %}text-secondary{% else %}text-danger{% endif %} mb-2 fw-bold">{{ verify_result.data.degree_info }}</h3>
+                            <p class="fs-5 mb-4">Năm tốt nghiệp: <b class="text-danger">{{ verify_result.data.get('graduation_year', '2026') }}</b></p>
+
+                            <h4 class="fw-bold" style="color: #bba14f;">{{ verify_result.data.university }}</h4>
+
+                            <div class="row mt-4 align-items-center">
+                                <div class="col-4">
+                                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=110x110&data={{ request.host_url }}verify?cert_id={{ verify_result.data.cert_id }}" alt="QR" class="border p-1 shadow-sm">
+                                </div>
+                                <div class="col-8 text-end pe-4">
+                                    <p class="mb-4 fs-5"><b>HIỆU TRƯỞNG</b><br><span class="fs-6 text-success fst-italic">(Đã ký số Blockchain)</span></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onclick="downloadPDF()" class="btn btn-warning w-100 fw-bold fs-5 shadow-sm text-dark mb-2">📥 Tải Chứng Chỉ (Bản PDF)</button>
+
+                    {% if verify_result.status == 'REVOKED' %}
+                    <div class="alert alert-danger mt-3 fw-bold">Lý do thu hồi: {{ verify_result.reason }}</div>
+                    {% endif %}
+                    <a href="/" class="btn btn-outline-secondary w-100">← Đóng và xem Sổ cái</a>
+                {% else %}
+                    <div class="alert alert-danger shadow-lg p-4 text-center border-danger border-2">
+                        <h1 class="display-1">❌</h1><h3 class="fw-bold text-danger mt-3">BẰNG GIẢ / KHÔNG TỒN TẠI</h3>
+                        <p class="fs-5">Số hiệu văn bằng này không có trên chuỗi khối.</p><a href="/" class="btn btn-outline-danger mt-3">Quay lại</a>
+                    </div>
+                {% endif %}
+            {% else %}
+                <h4 class="mb-3 text-secondary fw-bold">🔗 Lịch sử Giao dịch (Sổ cái)</h4>
+                <div style="max-height: 650px; overflow-y: auto;">
+                    {% for block in chain[::-1] %}
+                    <div class="card mb-3 shadow-sm border-0 border-start border-5 border-secondary bg-white">
+                        <div class="card-body">
+                            <h6 class="card-title text-dark fw-bold">Block #{{ block.index }} 
+                                <span class="badge bg-secondary float-end">{{ block.certificates|length }} Bản ghi</span>
+                            </h6>
+                            <hr class="my-2">
+                            {% if block.certificates|length == 0 %} 
+                                <p class="text-muted mb-0 fst-italic">Genesis Block</p>
+                            {% else %}
+                                <ul class="list-group list-group-flush">
+                                {% for cert in block.certificates %}
+                                    <li class="list-group-item bg-transparent px-0 py-1 border-0">
+                                        {% if cert.action == 'REVOKE' %}
+                                            ⛔ <b class="text-danger">LỆNH THU HỒI</b>: Số hiệu <span class="cert-id">{{ cert.cert_id }}</span>
+                                        {% else %}
+                                            🎓 <b>{{ cert.student_name }}</b> ({{ cert.student_id }}) <br>
+                                            Số hiệu: <span class="cert-id">{{ cert.cert_id }}</span> | <small class="text-muted">{{ cert.university }}</small>
+                                        {% endif %}
+                                    </li>
+                                {% endfor %}
+                                </ul>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // SCRIPT QUÉT QR
+        function startScanner() {
+            document.getElementById('qr-reader').style.display = 'block';
+            document.getElementById('btnScan').style.display = 'none';
+            let html5QrcodeScanner = new Html5QrcodeScanner("qr-reader", { fps: 10, qrbox: {width: 250, height: 250} }, false);
+            html5QrcodeScanner.render((decodedText, decodedResult) => {
+                let certId = decodedText;
+                // Xử lý thông minh: Nếu quét trúng Link web, tự bóc lấy phần ID ở cuối
+                if(certId.includes("cert_id=")) { 
+                    certId = certId.split("cert_id=")[1]; 
+                } else if(certId.includes("CertID:")) { 
+                    certId = certId.split(":")[1]; 
+                }
+                document.getElementById('cert_id_input').value = certId;
+                html5QrcodeScanner.clear();
+                document.getElementById('qr-reader').style.display = 'none';
+                document.getElementById('btnScan').style.display = 'block';
+                document.getElementById('btnScan').innerText = "✅ Đã quét thành công!";
+                document.getElementById('btnScan').classList.replace("btn-outline-primary", "btn-success");
+            }, (error) => {});
+        }
+
+        // SCRIPT XUẤT PDF
+        function downloadPDF() {
+            var element = document.getElementById('diploma-content');
+            var opt = {
+              margin:       0.2,
+              filename:     'Bang_Tot_Nghiep.pdf',
+              image:        { type: 'jpeg', quality: 0.98 },
+              html2canvas:  { scale: 2, useCORS: true }, // useCORS để render được ảnh QR Code
+              jsPDF:        { unit: 'in', format: 'a4', orientation: 'landscape' }
+            };
+            html2pdf().set(opt).from(element).save();
+        }
+    </script>
+</body>
+</html>
+"""
+
+LOGIN_TEMPLATE = """
+<!DOCTYPE html><html lang="vi"><head><title>Đăng nhập Nội bộ</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body class="container py-5 text-center bg-light">
+    <div class="row justify-content-center mt-5"><div class="col-md-4">
+        <h3 class="mb-4 text-primary fw-bold">Đăng nhập Nội bộ</h3>
+        <p class="text-muted small">Tài khoản: <b>hubt</b>, <b>bachkhoa</b>, <b>kinhte</b><br>Mật khẩu: <b>123456</b></p>
+        <form action="/login" method="POST" class="card p-4 shadow-lg border-primary border-2">
+            <input type="text" name="username" class="form-control form-control-lg mb-3" placeholder="Tài khoản..." required>
+            <input type="password" name="password" class="form-control form-control-lg mb-4" placeholder="Mật khẩu..." required>
+            <button type="submit" class="btn btn-primary btn-lg w-100 fw-bold">Vào hệ thống</button>
+            <a href="/" class="mt-3 text-decoration-none text-secondary">← Quay lại</a>
+        </form>
+    </div></div>
+</body></html>
+"""
+
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE, chain=edu_chain.chain, verify_result=None)
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username, password = request.form['username'], request.form['password']
+        conn = sqlite3.connect('users.db');
+        c = conn.cursor()
+        c.execute("SELECT password, role, university_name FROM users WHERE username=?", (username,))
+        user = c.fetchone();
+        conn.close()
+        if user and check_password_hash(user[0], password):
+            session['username'], session['role'], session['university_name'] = username, user[1], user[2]
+            return redirect(url_for('index'))
+        else:
+            flash("Sai tài khoản hoặc mật khẩu!", "error");
+            return redirect(url_for('login'))
+    return render_template_string(LOGIN_TEMPLATE)
+
+
+@app.route('/logout')
+def logout(): session.clear(); return redirect(url_for('index'))
+
+
+@app.route('/issue', methods=['POST'])
+def issue_and_mine():
+    if session.get('role') != 'university': return redirect(url_for('index'))
+    success, result = edu_chain.issue_certificate(
+        session.get('university_name'), request.form.get('student_id'),
+        request.form.get('student_name'), request.form.get('dob'),  # Lấy thêm ngày sinh
+        request.form.get('degree_info'), request.form.get('graduation_year')
+    )
+    if success:
+        edu_chain.mine_pending_certificates(difficulty=3)
+        flash(f"Cấp phát thành công! Số hiệu: {result}", "success")
+    else:
+        flash(result, "error")
+    return redirect(url_for('index'))
+
+
+@app.route('/issue_bulk', methods=['POST'])
+def issue_bulk():
+    if session.get('role') != 'university': return redirect(url_for('index'))
+    file = request.files.get('file')
+    if not file or not file.filename.endswith('.csv'): return redirect(url_for('index'))
+    stream = io.StringIO(file.stream.read().decode("UTF8"), newline=None)
+    csv_input = csv.reader(stream);
+    count = 0
+    for row in csv_input:
+        if len(row) >= 3:
+            grad_year = row[3].strip() if len(row) > 3 else "2026"
+            dob = row[4].strip() if len(row) > 4 else "01/01/2000"  # Lấy ngày sinh từ CSV
+            success, _ = edu_chain.issue_certificate(
+                session.get('university_name'), row[0].strip(), row[1].strip(),
+                dob, row[2].strip(), grad_year
+            )
+            if success: count += 1
+    if count > 0:
+        edu_chain.mine_pending_certificates(difficulty=3)
+        flash(f"Đã đóng gói {count} bằng vào 1 Block duy nhất.", "success")
+    return redirect(url_for('index'))
+
+
+@app.route('/revoke', methods=['POST'])
+def revoke():
+    if session.get('role') != 'university': return redirect(url_for('index'))
+    edu_chain.revoke_certificate(session.get('university_name'), request.form.get('cert_id').strip().upper(),
+                                 request.form.get('reason'))
+    edu_chain.mine_pending_certificates(difficulty=3)
+    flash("Đã ghi lệnh THU HỒI vĩnh viễn lên Blockchain!", "success")
+    return redirect(url_for('index'))
+
+
+@app.route('/verify', methods=['GET'])
+def verify():
+    result = edu_chain.verify_certificate(request.args.get('cert_id'))
+    return render_template_string(HTML_TEMPLATE, chain=edu_chain.chain, verify_result=result)
+
+
+if __name__ == '__main__': app.run(host='0.0.0.0', port=5000, debug=True)

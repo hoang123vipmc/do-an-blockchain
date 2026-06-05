@@ -1,0 +1,14 @@
+.env
+.git/
+.github/
+__pycache__/
+*.pyc
+*.pyo
+venv/
+env/
+.venv/
+keys/
+data/
+users.db
+blockchain_data.json
+ungdungblockchain_old_backup.txt
