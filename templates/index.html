@@ -280,14 +280,28 @@
         // SCRIPT XUẤT PDF
         function downloadPDF() {
             var element = document.getElementById('diploma-content');
+            
+            // Lưu lại style cũ
+            var originalWidth = element.style.width;
+            var originalMaxWidth = element.style.maxWidth;
+            
+            // Ép khung bằng thành giao diện máy tính ngang (1000px) để không bị cắt xén khi lưu PDF trên điện thoại
+            element.style.width = '1000px';
+            element.style.maxWidth = 'none';
+
             var opt = {
               margin:       0.2,
               filename:     'Bang_Tot_Nghiep.pdf',
               image:        { type: 'jpeg', quality: 0.98 },
-              html2canvas:  { scale: 2, useCORS: true }, // useCORS để render được ảnh QR Code
+              html2canvas:  { scale: 2, useCORS: true, scrollY: 0 }, // scrollY: 0 sửa lỗi bị mất nửa trên khi user cuộn trang
               jsPDF:        { unit: 'in', format: 'a4', orientation: 'landscape' }
             };
-            html2pdf().set(opt).from(element).save();
+            
+            html2pdf().set(opt).from(element).save().then(function() {
+                // Trả lại nguyên trạng thái cũ cho giao diện
+                element.style.width = originalWidth;
+                element.style.maxWidth = originalMaxWidth;
+            });
         }
 
         // UX: Giả lập thời gian truy xuất chuỗi khối (Loading state)

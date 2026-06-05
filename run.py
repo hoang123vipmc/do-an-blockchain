@@ -18,7 +18,7 @@ load_dotenv()
 
 # Cấu hình Hệ thống Logging
 if not os.path.exists('data'):
-    os.makedirs('data')
+    os.makedirs('data', exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
